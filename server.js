@@ -4,12 +4,13 @@ import fetch from "node-fetch";
 const app = express();
 app.use(express.json());
 
-// Listen directly on your main URL
-app.post("/", async (req, res) => {
+// Handle GET requests (for MyLead postbacks)
+app.get("/", async (req, res) => {
   try {
-    const data = req.body;
+    // Get data from query string (MyLead sends data like ?click_id=123&payout=1)
+    const data = req.query;
 
-    // Send to Google Sheet
+    // Save to Google Sheet
     await fetch("https://api.sheetbest.com/sheets/a8712e81-f061-4552-81f7-29bfd61d33f2", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -19,10 +20,31 @@ app.post("/", async (req, res) => {
       })
     });
 
-    res.json({ success: true, message: "Saved to sheet" });
+    // ✅ Respond with 200 OK so MyLead knows it worked
+    res.status(200).send("OK");
   } catch (e) {
     console.error(e);
-    res.status(500).json({ success: false, message: "Error" });
+    res.status(500).send("Error");
+  }
+});
+
+// Handle POST requests too (just in case)
+app.post("/", async (req, res) => {
+  try {
+    const data = req.body;
+    await fetch("https://api.sheetbest.com/sheets/a8712e81-f061-4552-81f7-29bfd61d33f2", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        info: JSON.stringify(data),
+        date: new Date().toISOString()
+      })
+    });
+
+    res.status(200).send("OK");
+  } catch (e) {
+    console.error(e);
+    res.status(500).send("Error");
   }
 });
 
