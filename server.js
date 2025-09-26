@@ -2,50 +2,26 @@ import express from "express";
 import fetch from "node-fetch";
 
 const app = express();
-app.use(express.json());
 
-// Handle GET requests (for MyLead postbacks)
 app.get("/", async (req, res) => {
   try {
-    // Get data from query string (MyLead sends data like ?click_id=123&payout=1)
+    // ✅ Collect all query parameters from MyLead postback
     const data = req.query;
 
-    // Save to Google Sheet
+    // ✅ Send them to your Google Sheet via SheetBest API
     await fetch("https://api.sheetbest.com/sheets/a8712e81-f061-4552-81f7-29bfd61d33f2", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        info: JSON.stringify(data),
-        date: new Date().toISOString()
-      })
+      body: JSON.stringify(data)
     });
 
-    // ✅ Respond with 200 OK so MyLead knows it worked
-    res.status(200).send("OK");
-  } catch (e) {
-    console.error(e);
-    res.status(500).send("Error");
+    // ✅ Send a 200 OK back to MyLead
+    res.status(200).send("Postback saved successfully");
+  } catch (error) {
+    console.error("Error saving to sheet:", error);
+    res.status(500).send("Failed to save postback");
   }
 });
 
-// Handle POST requests too (just in case)
-app.post("/", async (req, res) => {
-  try {
-    const data = req.body;
-    await fetch("https://api.sheetbest.com/sheets/a8712e81-f061-4552-81f7-29bfd61d33f2", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        info: JSON.stringify(data),
-        date: new Date().toISOString()
-      })
-    });
-
-    res.status(200).send("OK");
-  } catch (e) {
-    console.error(e);
-    res.status(500).send("Error");
-  }
-});
-
-app.listen(process.env.PORT || 3000, () => console.log("Server running"));
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`✅ Server running on port ${PORT}`));
