@@ -2,34 +2,28 @@ import express from "express";
 import fetch from "node-fetch";
 
 const app = express();
-const PORT = process.env.PORT || 3000;
-const SHEET_URL = process.env.SHEET_URL; // Use Render Environment Variable
+app.use(express.json());
 
-app.get("/postback", async (req, res) => {
+// Listen directly on your main URL
+app.post("/", async (req, res) => {
   try {
-    const { click_id, payout, status } = req.query;
+    const data = req.body;
 
-    if (status === "approved") {
-      const userPayout = parseFloat(payout) * 0.8; // keep 20% profit
+    // Send to Google Sheet
+    await fetch("https://api.sheetbest.com/sheets/a8712e81-f061-4552-81f7-29bfd61d33f2", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        info: JSON.stringify(data),
+        date: new Date().toISOString()
+      })
+    });
 
-      await fetch(SHEET_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          user_id: click_id,
-          credit: userPayout,
-          date: new Date().toISOString(),
-        }),
-      });
-
-      console.log(`Credited ${click_id} with $${userPayout}`);
-    }
-
-    res.status(200).send("OK");
-  } catch (err) {
-    console.error(err);
-    res.status(500).send("Error");
+    res.json({ success: true, message: "Saved to sheet" });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ success: false, message: "Error" });
   }
 });
 
-app.listen(PORT, () => console.log(`Postback server running on ${PORT}`));
+app.listen(process.env.PORT || 3000, () => console.log("Server running"));
