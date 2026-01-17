@@ -94,18 +94,18 @@
 
         const aiService = {
             async getActiveKey() {
-                // Priority 1: Admin-entered key in LocalStorage (Trimmed)
+                // Check local storage (Admin manual entry)
                 const localKey = localStorage.getItem('pr_admin_gemini_key');
                 if (localKey && localKey.trim()) return localKey.trim();
 
-                // Priority 2: System Environment Variable
-                if (process.env.API_KEY && process.env.API_KEY !== 'undefined') return process.env.API_KEY;
-                
-                // Priority 3: Database Global Config
+                // Check Supabase
                 try {
                     const { data } = await supabase.from('protocol_settings').select('gemini_api_key').single();
                     if (data?.gemini_api_key) return data.gemini_api_key.trim();
                 } catch(e) {}
+                
+                // Environment fallback
+                if (process.env.API_KEY && process.env.API_KEY !== 'undefined') return process.env.API_KEY;
                 
                 return null;
             },
@@ -116,8 +116,8 @@
                     if (!apiKey) return null;
                     const ai = new GoogleGenAI({ apiKey });
                     const response = await ai.models.generateContent({
-                        model: 'gemini-3-pro-preview',
-                        contents: `Find 5 NEW crypto/earning apps or sites. Return JSON array. Fields: name, category, reward, link, description.`,
+                        model: 'gemini-3-flash-preview',
+                        contents: `Find 5 NEW crypto/earning apps or sites that are currently paying. Return a JSON array with: name, category, reward, link, description.`,
                         config: { tools: [{ googleSearch: {} }], responseMimeType: "application/json" }
                     });
                     return JSON.parse(response.text);
@@ -127,12 +127,12 @@
             async auditSite(site) {
                 try {
                     const apiKey = await this.getActiveKey();
-                    if (!apiKey) return "ENGINE OFFLINE: Configure Gemini API in Admin Terminal.";
+                    if (!apiKey) return "ENGINE OFFLINE: Configure Gemini API Key in Admin.";
 
                     const ai = new GoogleGenAI({ apiKey });
                     const response = await ai.models.generateContent({
-                        model: 'gemini-3-pro-preview',
-                        contents: `Research "${site}". Is it currently paying? Find community proofs. Verdict: LEGIT or SCAM.`,
+                        model: 'gemini-3-flash-preview',
+                        contents: `Search the web for recent withdrawal proofs of "${site}". Is it currently legit and paying? Verdict: LEGIT or SCAM.`,
                         config: { tools: [{ googleSearch: {} }] }
                     });
                     
@@ -140,7 +140,11 @@
                     const links = sources.filter(c => c.web?.uri).map(c => `\n🔗 [${c.web.title}](${c.web.uri})`).join('');
                     return response.text + (links ? `\n\n**Sources:**${links}` : '');
                 } catch (e) { 
-                    return "Audit Error: " + (e.message || "Invalid API Key or Rate Limited.");
+                    // Improved debugging
+                    const errorMsg = e.message || "Unknown Connection Error";
+                    if (errorMsg.includes("billing")) return "ERROR: Google Search tool requires a Billing Project linked to your API Key (even for free tier). Check AI Studio settings.";
+                    if (errorMsg.includes("API key not valid")) return "ERROR: Invalid API Key. Please re-enter in Admin Terminal.";
+                    return "Neural Link Error: " + errorMsg;
                 }
             }
         };
@@ -159,28 +163,20 @@
                     supabase.from('opportunities').select('*').order('created_at', { ascending: false }).limit(50).then(res => setSignals(res.data || []));
                     supabase.from('protocol_settings').select('ad_code, gemini_api_key').single().then(res => {
                         if (res.data) {
-                            // Only fill if local is empty to avoid overwriting typed data
                             if (!adCode) setAdCode(res.data.ad_code || '');
                             if (!geminiKey) setGeminiKey(res.data.gemini_api_key || '');
                         }
                     });
                 }
-            }, [isAuth]);
+                    }, [isAuth]);
 
             const saveProtocol = async () => {
                 setSaving(true);
                 localStorage.setItem('pr_admin_ad_code', adCode);
-                localStorage.setItem('pr_admin_gemini_key', geminiKey);
-
-                const { error } = await supabase.from('protocol_settings').upsert({ 
-                    id: 1, 
-                    ad_code: adCode,
-                    gemini_api_key: geminiKey 
-                }, { onConflict: 'id' });
-                        
+                localStorage.setItem('pr_admin_gemini_key', geminiKey.trim());
+                await supabase.from('protocol_settings').upsert({ id: 1, ad_code: adCode, gemini_api_key: geminiKey.trim() });
                 setSaving(false);
-                if (!error) alert("PROTOCOLS LOCKED & SYNCED.");
-                else alert("SYNC ERROR: " + error.message);
+                alert("PROTOCOLS SECURED LOCALLY & SYNCED.");
             };
 
             const addManual = async () => {
@@ -188,49 +184,36 @@
                 if (!error) { alert("BROADCASTED."); setManual({ name: '', category: 'Airdrop', reward: '', link: '', description: '', guide: '' }); }
             };
 
-            const overrideLink = async (id, link) => {
-                await supabase.from('opportunities').update({ link }).eq('id', id);
-            };
-
             if (!isAuth) {
                 return (
                     <div className="min-h-screen flex flex-col items-center justify-center p-6 bg-slate-950 font-mono">
+                        <div className="w-12 h-12 bg-yellow-500 rounded-xl mb-6 flex items-center justify-center font-black text-black">PR</div>
                         <input type="password" value={pass} onChange={e => setPass(e.target.value)} placeholder="Passcode" className="compact-input text-center mb-4 max-w-[180px]" />
-                        <button onClick={() => pass === ADMIN_PASS && setIsAuth(true)} className="bg-yellow-500 text-black px-6 py-2 rounded-lg font-black text-[10px] uppercase">Unlock Hub</button>
+                        <button onClick={() => pass === ADMIN_PASS && setIsAuth(true)} className="bg-yellow-500 text-black px-8 py-3 rounded-lg font-black text-[10px] uppercase">Authorize Terminal</button>
                     </div>
                 );
             }
 
             return (
                 <div className="p-4 space-y-6 max-w-md mx-auto pb-32 animate-in fade-in">
-                    <header className="flex justify-between items-center"><h2 className="font-black gold-gradient italic">HUB OVERWATCH</h2><button onClick={onExit} className="text-[9px] text-slate-500">EXIT</button></header>
+                    <header className="flex justify-between items-center"><h2 className="font-black gold-gradient italic uppercase">Hub Overwatch</h2><button onClick={onExit} className="text-[9px] text-slate-500">EXIT</button></header>
                     <section className="card-alpha p-4 space-y-4">
                         <div>
-                            <h3 className="text-[9px] font-black text-slate-400 uppercase mb-2">Neural Link (API)</h3>
+                            <h3 className="text-[9px] font-black text-slate-400 uppercase mb-2">Neural Link (API Key)</h3>
                             <input type="text" value={geminiKey} onChange={e => setGeminiKey(e.target.value)} className="compact-input font-mono text-[10px]" placeholder="sk-..." />
                         </div>
                         <div>
-                            <h3 className="text-[9px] font-black text-slate-400 uppercase mb-2">Ad Script Injection</h3>
-                            <textarea value={adCode} onChange={e => setAdCode(e.target.value)} className="compact-input h-24 font-mono text-[9px]" placeholder="<script>..." />
+                            <h3 className="text-[9px] font-black text-slate-400 uppercase mb-2">Ad Code</h3>
+                            <textarea value={adCode} onChange={e => setAdCode(e.target.value)} className="compact-input h-24 font-mono text-[9px]" placeholder="Paste script..." />
                         </div>
-                        <button onClick={saveProtocol} disabled={saving} className="w-full bg-white text-black py-3 rounded text-[9px] font-black uppercase">
-                            {saving ? 'LOCKING...' : 'Update Alpha Protocols'}
-                        </button>
+                        <button onClick={saveProtocol} disabled={saving} className="w-full bg-white text-black py-4 rounded-xl text-[9px] font-black uppercase shadow-xl">{saving ? 'LOCKING...' : 'Update Protocols'}</button>
                     </section>
                     <section className="card-alpha p-4 space-y-2">
-                        <h3 className="text-[9px] font-black text-slate-400 uppercase mb-2">Manual Broadcast</h3>
+                        <h3 className="text-[9px] font-black text-slate-400 uppercase mb-2">Manual Signal</h3>
                         <input value={manual.name} onChange={e => setManual({...manual, name: e.target.value})} placeholder="Project Name" className="compact-input" />
+                        <input value={manual.reward} onChange={e => setManual({...manual, reward: e.target.value})} placeholder="Reward" className="compact-input" />
                         <input value={manual.link} onChange={e => setManual({...manual, link: e.target.value})} placeholder="Link" className="compact-input" />
-                        <button onClick={addManual} className="w-full bg-yellow-500 text-black py-2 rounded text-[9px] font-black uppercase">Broadcast</button>
-                    </section>
-                    <section className="space-y-2">
-                        <h3 className="text-[9px] font-black text-slate-400 uppercase px-1">Link Overrides</h3>
-                        {signals.map(s => (
-                            <div key={s.id} className="card-alpha p-2 flex flex-col gap-1">
-                                <span className="text-[9px] font-black text-white italic">{s.name}</span>
-                                <input defaultValue={s.link} onBlur={e => overrideLink(s.id, e.target.value)} className="compact-input text-yellow-500 border-none bg-black/20" />
-                            </div>
-                        ))}
+                        <button onClick={addManual} className="w-full bg-yellow-500 text-black py-3 rounded-xl text-[9px] font-black uppercase">Push Signal</button>
                     </section>
                 </div>
             );
@@ -254,7 +237,7 @@
             }, []);
 
             useEffect(() => {
-                const alphaCycle = async () => {
+                const alphaRoutine = async () => {
                     const res = await aiService.fetchNewAlpha();
                     if (res && Array.isArray(res)) {
                         for (const item of res) {
@@ -264,28 +247,26 @@
                         fetchFeed();
                     }
                 };
-                alphaCycle();
-                const interval = setInterval(alphaCycle, 3600000);
+                alphaRoutine();
+                const interval = setInterval(alphaRoutine, 3600000);
                 return () => clearInterval(interval);
             }, [fetchFeed]);
 
             useEffect(() => {
                 fetchFeed();
                 let adBox = null;
-                supabase.from('protocol_settings').select('ad_code').single().then(res => {
-                    const code = res.data?.ad_code || localStorage.getItem('pr_admin_ad_code');
-                    if (code && !isAdmin) {
-                        adBox = document.createElement('div');
-                        adBox.className = 'fixed bottom-12 left-0 right-0 z-40 text-center scale-[0.7] opacity-40';
-                        adBox.innerHTML = code;
-                        document.body.appendChild(adBox);
-                        Array.from(adBox.getElementsByTagName('script')).forEach(s => {
-                            const ns = document.createElement('script');
-                            if (s.src) ns.src = s.src; else ns.textContent = s.textContent;
-                            document.body.appendChild(ns);
-                        });
-                    }
-                });
+                const localAd = localStorage.getItem('pr_admin_ad_code');
+                if (localAd && !isAdmin) {
+                    adBox = document.createElement('div');
+                    adBox.className = 'fixed bottom-12 left-0 right-0 z-40 text-center scale-[0.7] opacity-40';
+                    adBox.innerHTML = localAd;
+                    document.body.appendChild(adBox);
+                    Array.from(adBox.getElementsByTagName('script')).forEach(s => {
+                        const ns = document.createElement('script');
+                        if (s.src) ns.src = s.src; else ns.textContent = s.textContent;
+                        document.body.appendChild(ns);
+                    });
+                }
                 return () => adBox && adBox.remove();
             }, [fetchFeed, isAdmin]);
 
@@ -302,7 +283,7 @@
 
             return (
                 <div className="max-w-md mx-auto min-h-screen relative pb-20">
-                    <nav className="fixed top-0 left-0 right-0 h-10 bg-slate-950 border-b border-white/5 px-4 flex items-center justify-between z-50 max-w-md mx-auto">
+                    <nav className="fixed top-0 left-0 right-0 h-10 bg-slate-950/80 backdrop-blur-xl border-b border-white/5 px-4 flex items-center justify-between z-50 max-w-md mx-auto">
                         <div className="flex items-center gap-1.5"><div className="w-5 h-5 bg-yellow-500 rounded flex items-center justify-center font-black text-[9px] text-black italic">PR</div><span className="font-black text-[10px] gold-gradient italic uppercase tracking-tighter">PayRadar Alpha</span></div>
                         <div className="flex gap-4">
                             <button onClick={() => setView('feed')} className={`text-[8px] font-black uppercase ${view === 'feed' ? 'text-yellow-500' : 'text-slate-500'}`}>Alpha</button>
@@ -312,13 +293,13 @@
                     <main className="mt-12 p-3 space-y-4">
                         {view === 'feed' ? (
                             <div className="animate-in slide-in-from-bottom-2">
-                                <header className="mb-4"><h1 className="text-xl font-black italic uppercase leading-none text-white">L100 <span className="gold-gradient">FEED.</span></h1></header>
+                                <header className="mb-4"><h1 className="text-xl font-black italic uppercase text-white">L100 <span className="gold-gradient">Feed.</span></h1></header>
                                 <div className="flex gap-1 overflow-x-auto hide-scrollbar mb-4">{['ALL', 'AIRDROP', 'REFERRAL', 'TASK'].map(t => (<button key={t} onClick={() => setActiveTab(t)} className={`tab-btn whitespace-nowrap ${activeTab === t ? 'bg-yellow-500 text-black' : 'bg-slate-900 text-slate-500'}`}>{t}</button>))}</div>
                                 <div className="space-y-1.5">
-                                    {loading ? <div className="py-20 text-center opacity-20 text-[9px] font-black uppercase animate-pulse">Scanning...</div> : 
+                                    {loading ? <div className="py-20 text-center opacity-20 text-[9px] font-black animate-pulse">Scanning...</div> : 
                                     filtered.map(sig => (
                                         <div key={sig.id} onClick={() => setSelected(sig)} className="card-alpha p-3 flex justify-between items-center group cursor-pointer border-white/5">
-                                            <div><div className="flex items-center gap-1.5 mb-0.5"><span className="text-[10px] font-black text-white group-hover:text-yellow-500 transition-colors uppercase italic">{sig.name}</span><span className="text-[6px] font-black text-green-500 bg-green-500/5 px-1 rounded">PAYING</span></div><span className="text-[8px] font-mono text-yellow-500/80 uppercase">{sig.reward}</span></div>
+                                            <div><span className="text-[10px] font-black text-white group-hover:text-yellow-500 uppercase italic block">{sig.name}</span><span className="text-[8px] font-mono text-yellow-500/80 uppercase">{sig.reward}</span></div>
                                             <span className="text-[8px] font-bold text-slate-500 uppercase">Intel →</span>
                                         </div>
                                     ))}
@@ -326,10 +307,10 @@
                             </div>
                         ) : (
                             <div className="animate-in slide-in-from-right-2">
-                                <header className="mb-6"><h1 className="text-xl font-black italic uppercase text-white">NEURAL <span className="gold-gradient">AUDIT.</span></h1></header>
+                                <header className="mb-6"><h1 className="text-xl font-black italic uppercase text-white">Neural <span className="gold-gradient">Audit.</span></h1></header>
                                 <div className="card-alpha p-4 space-y-3">
-                                    <input value={auditQ} onChange={e => setAuditQ(e.target.value)} onKeyDown={e => e.key === 'Enter' && runAudit()} placeholder="Check URL..." className="compact-input" />
-                                    <button onClick={runAudit} disabled={auditing} className="w-full bg-white text-black font-black py-3 rounded-lg uppercase text-[9px] shadow-xl">{auditing ? 'VETTING...' : 'Run Audit'}</button>
+                                    <input value={auditQ} onChange={e => setAuditQ(e.target.value)} onKeyDown={e => e.key === 'Enter' && runAudit()} placeholder="Check project..." className="compact-input" />
+                                    <button onClick={runAudit} disabled={auditing} className="w-full bg-white text-black font-black py-4 rounded-xl text-[9px] shadow-xl">{auditing ? 'Vetting...' : 'Scan Neural Link'}</button>
                                 </div>
                                 {auditR && <div className="mt-4 bg-slate-900/40 p-4 rounded-xl border border-white/5 text-[9px] font-mono text-slate-300 whitespace-pre-wrap">{auditR}</div>}
                             </div>
@@ -338,16 +319,15 @@
                     {selected && (
                         <div className="fixed inset-0 z-[100] flex items-end justify-center bg-black/70 backdrop-blur-sm" onClick={() => setSelected(null)}>
                             <div className="w-full max-w-md bottom-sheet p-5 space-y-4 animate-in slide-in-from-bottom-10" onClick={e => e.stopPropagation()}>
-                                <div className="flex justify-between items-start"><div><h2 className="text-2xl font-black text-white italic uppercase tracking-tighter leading-none">{selected.name}</h2></div><button onClick={() => setSelected(null)} className="text-2xl text-slate-500">×</button></div>
-                                <div className="space-y-4 overflow-y-auto max-h-[60vh] hide-scrollbar pb-6 text-[10px]">
-                                    <div className="grid grid-cols-2 gap-2"><div className="bg-white/5 p-2 rounded border border-white/5"><span className="text-slate-500 block mb-1 uppercase text-[7px]">Yield</span><span className="text-yellow-500 font-black">{selected.reward}</span></div><div className="bg-white/5 p-2 rounded border border-white/5"><span className="text-slate-500 block mb-1 uppercase text-[7px]">Type</span><span className="text-cyan-400 font-black uppercase">{selected.category}</span></div></div>
-                                    <div className="bg-slate-900/50 p-3 rounded-xl border border-white/5"><p className="text-slate-300 leading-relaxed">{selected.description}</p></div>
-                                    <div className="pt-4"><a href={selected.link} target="_blank" className="block w-full text-center py-4 bg-white text-black font-black rounded-xl uppercase shadow-2xl">Claim Access</a></div>
+                                <h2 className="text-2xl font-black text-white italic uppercase">{selected.name}</h2>
+                                <div className="space-y-4 text-[10px]">
+                                    <div className="bg-slate-900/50 p-4 rounded-2xl border border-white/5"><p className="text-slate-300 leading-relaxed">{selected.description}</p></div>
+                                    <div className="pt-4"><a href={selected.link} target="_blank" className="block w-full text-center py-4 bg-white text-black font-black rounded-xl uppercase">Claim Alpha Access</a></div>
                                 </div>
                             </div>
                         </div>
                     )}
-                    <footer className="fixed bottom-0 left-0 right-0 h-8 border-t border-white/5 bg-slate-950 flex items-center justify-center z-40 max-w-md mx-auto"><p className="text-[7px] text-slate-800 font-black uppercase tracking-[0.5em] italic">© 2026 PayRadar • <a href="?admin=true">Terminal</a></p></footer>
+                    <footer className="fixed bottom-0 left-0 right-0 h-8 border-t border-white/5 bg-slate-950 flex items-center justify-center z-40 max-w-md mx-auto"><p className="text-[7px] text-slate-800 font-black uppercase italic">© 2026 PayRadar • <a href="?admin=true">Terminal Auth</a></p></footer>
                 </div>
             );
         };
