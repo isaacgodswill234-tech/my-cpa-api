@@ -97,10 +97,24 @@
         // --- AI LOGIC ---
         const aiService = {
             async getActiveKey() {
-                // Prioritize environment key, then fallback to database-stored key
+                // Priority 1: Browser LocalStorage (Fastest for Admin)
+                const localKey = localStorage.getItem('pr_admin_gemini_key');
+                if (localKey && localKey.startsWith('AI')) return localKey;
+
+                // Priority 2: Environment Variable
                 if (process.env.API_KEY && process.env.API_KEY !== 'undefined') return process.env.API_KEY;
-                const { data } = await supabase.from('protocol_settings').select('gemini_api_key').single();
-                return data?.gemini_api_key;
+                
+                // Priority 3: Supabase (Global Fallback)
+                try {
+                    const { data } = await supabase.from('protocol_settings').select('gemini_api_key').single();
+                    if (data?.gemini_api_key) {
+                        // Cache it locally for next time
+                        localStorage.setItem('pr_admin_gemini_key', data.gemini_api_key);
+                        return data.gemini_api_key;
+                    }
+                } catch(e) {}
+                
+                return null;
             },
 
             async fetchNewAlpha() {
@@ -138,7 +152,7 @@
                         }
                     });
                     return JSON.parse(response.text);
-                } catch (e) { console.error(e); return null; }
+                } catch (e) { console.error("Neural Research Fail:", e); return null; }
             },
 
             async auditSite(site) {
@@ -155,7 +169,7 @@
                     const sources = response.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
                     const links = sources.filter(c => c.web?.uri).map(c => `\n🔗 [${c.web.title}](${c.web.uri})`).join('');
                     return response.text + (links ? `\n\n**Sources:**${links}` : '');
-                } catch (e) { return "Audit Failed. Verify API Link."; }
+                } catch (e) { return "Audit Failed. Verify API Link. Neural Link might be saturated."; }
             }
         };
 
@@ -163,8 +177,11 @@
         const AdminTerminal = ({ onExit }) => {
             const [isAuth, setIsAuth] = useState(false);
             const [pass, setPass] = useState('');
-            const [adCode, setAdCode] = useState('');
-            const [geminiKey, setGeminiKey] = useState('');
+            
+            // Local state for editing - separate from what is currently saved in cloud
+            const [adCode, setAdCode] = useState(localStorage.getItem('pr_admin_ad_code') || '');
+            const [geminiKey, setGeminiKey] = useState(localStorage.getItem('pr_admin_gemini_key') || '');
+            
             const [signals, setSignals] = useState([]);
             const [manual, setManual] = useState({ name: '', category: 'Airdrop', reward: '', link: '', description: '', guide: '' });
             const [saving, setSaving] = useState(false);
@@ -172,10 +189,17 @@
             useEffect(() => {
                 if (isAuth) {
                     supabase.from('opportunities').select('*').order('created_at', { ascending: false }).limit(50).then(res => setSignals(res.data || []));
+                    
+                    // Fetch cloud data to see if it's different from local storage
                     supabase.from('protocol_settings').select('ad_code, gemini_api_key').single().then(res => {
                         if (res.data) {
-                            setAdCode(res.data.ad_code || '');
-                            setGeminiKey(res.data.gemini_api_key || '');
+                            // Only update state if cloud data exists and local state is empty
+                            if (!adCode) setAdCode(res.data.ad_code || '');
+                            if (!geminiKey) setGeminiKey(res.data.gemini_api_key || '');
+                            
+                            // Always sync local storage with cloud on load
+                            if (res.data.ad_code) localStorage.setItem('pr_admin_ad_code', res.data.ad_code);
+                            if (res.data.gemini_api_key) localStorage.setItem('pr_admin_gemini_key', res.data.gemini_api_key);
                         }
                     });
                 }
@@ -183,6 +207,12 @@
 
             const saveProtocol = async () => {
                 setSaving(true);
+                
+                // Persistence Step 1: LocalStorage (Immediate safety)
+                localStorage.setItem('pr_admin_ad_code', adCode);
+                localStorage.setItem('pr_admin_gemini_key', geminiKey);
+
+                // Persistence Step 2: Cloud Storage
                 const { error } = await supabase.from('protocol_settings').upsert({ 
                     id: 1, 
                     ad_code: adCode,
@@ -190,15 +220,15 @@
                 }, { onConflict: 'id' });
                 
                 setSaving(false);
-                if (!error) alert("CORE PROTOCOLS SYNCED.");
-                else alert("SYNC ERROR: " + error.message);
+                if (!error) alert("CORE PROTOCOLS SYNCED LOCALLY & CLOUD.");
+                else alert("CLOUD SYNC ERROR (Saved Locally): " + error.message);
             };
 
             const addManual = async () => {
                 const { error } = await supabase.from('opportunities').insert([manual]);
                 if (!error) { alert("BROADCASTED."); setManual({ name: '', category: 'Airdrop', reward: '', link: '', description: '', guide: '' }); }
             };
-        
+    
             const overrideLink = async (id, link) => {
                 await supabase.from('opportunities').update({ link }).eq('id', id);
             };
@@ -222,12 +252,13 @@
                         <div>
                             <h3 className="text-[9px] font-black text-slate-400 uppercase mb-2">Neural link (Gemini API)</h3>
                             <input 
-                                type="password" 
+                                type="text" 
                                 value={geminiKey} 
                                 onChange={e => setGeminiKey(e.target.value)} 
                                 className="compact-input font-mono text-[10px]" 
                                 placeholder="sk-..." 
                             />
+                            <p className="text-[7px] text-slate-600 mt-1">Stored locally for instant audit response.</p>
                         </div>
                         <div>
                             <h3 className="text-[9px] font-black text-slate-400 uppercase mb-2">Adsterra Injection</h3>
@@ -241,6 +272,7 @@
                     <section className="card-alpha p-4 space-y-2">
                         <h3 className="text-[9px] font-black text-slate-400 uppercase mb-2">Publish Manual Signal</h3>
                         <input value={manual.name} onChange={e => setManual({...manual, name: e.target.value})} placeholder="Project Name" className="compact-input" />
+                        <input value={manual.reward} onChange={e => setManual({...manual, reward: e.target.value})} placeholder="Reward Type" className="compact-input" />
                         <input value={manual.link} onChange={e => setManual({...manual, link: e.target.value})} placeholder="Referral Link" className="compact-input" />
                         <button onClick={addManual} className="w-full bg-yellow-500 text-black py-2 rounded text-[9px] font-black uppercase">Broadcast Intel</button>
                     </section>
@@ -291,7 +323,7 @@
                     }
                 };
                 syncAlpha();
-                const interval = setInterval(syncAlpha, 3600000);
+                const interval = setInterval(syncAlpha, 3600000); // Hourly research
                 return () => clearInterval(interval);
             }, [fetchFeed]);
 
@@ -299,14 +331,17 @@
                 fetchFeed();
                 const sub = supabase.channel('hub_updates').on('postgres_changes', { event: '*', schema: 'public', table: 'opportunities' }, fetchFeed).subscribe();
                 
-                // Ads Injection with cleanup
+                // Ads Injection with local storage fallback
                 let adContainer = null;
-                supabase.from('protocol_settings').select('ad_code').single().then(res => {
-                    if (res.data?.ad_code && !isAdmin) {
+                const localAd = localStorage.getItem('pr_admin_ad_code');
+                
+                const inject = (code) => {
+                    if (code && !isAdmin) {
+                        if (adContainer) adContainer.remove();
                         adContainer = document.createElement('div');
                         adContainer.id = 'alpha-ad-slot';
                         adContainer.className = 'fixed bottom-12 left-0 right-0 z-40 text-center scale-[0.7] opacity-40 pointer-events-none';
-                        adContainer.innerHTML = res.data.ad_code;
+                        adContainer.innerHTML = code;
                         document.body.appendChild(adContainer);
                         
                         const ss = adContainer.getElementsByTagName('script');
@@ -315,6 +350,15 @@
                             if (s.src) ns.src = s.src; else ns.textContent = s.textContent;
                             document.body.appendChild(ns);
                         }
+                    }
+                };
+
+                if (localAd) inject(localAd);
+
+                supabase.from('protocol_settings').select('ad_code').single().then(res => {
+                    if (res.data?.ad_code && res.data.ad_code !== localAd) {
+                        localStorage.setItem('pr_admin_ad_code', res.data.ad_code);
+                        inject(res.data.ad_code);
                     }
                 });
 
